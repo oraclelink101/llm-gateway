@@ -17,36 +17,42 @@ this project's own mock backends. No real vendor, price, or model is referenced.
 ## Architecture
 
 ```
-                         POST /v1/chat
-                  {prompt, priority, max_tokens}
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │       Router        │   complexity score (0..1)
-                    │  (config/routing.yaml)│  length + keywords + code
-                    └──────────┬──────────┘
-                  score<thr │      │ score>=thr
-                       small │      │ large            (+ fallback on failure)
-                            ▼      ▼
-                    ┌─────────────────────────────────────┐
-                    │            Scheduler                 │
-                    │  pending: HIGH > NORMAL > LOW (FIFO)  │
-                    │  dispatcher + 2 concurrent slots      │
-                    │  HIGH preempts running LOW/NORMAL ─┐   │
-                    │  (cancel in-flight Task, requeue) ◄┘   │
-                    │  cumulative budget cap                 │
-                    └──────────────────┬───────────────────┘
-                                       │
-                                       ▼
-                    ┌─────────────────────────────────────┐
-                    │         Mock Backends (pool)         │
-                    │  small: cheap/fast   large: pricey/slow │
-                    │  OpenAI-compatible, asyncio.sleep latency│
-                    └──────────────────┬───────────────────┘
-                                       │
-                                       ▼
-                    {content, metadata: model, cost, latency,
-                     queue_wait, preempted_count, used_fallback}
+                 POST /v1/chat
+        {prompt, priority, max_tokens}
+                       │
+                       ▼
+          ┌───────────────────────────────────┐
+          │              Router               │
+          │  complexity score: length +       │
+          │  keywords + code blocks  (0..1)   │
+          │  thresholds in routing.yaml       │
+          └────────────┬──────────────────────┘
+                       │  score < thr  → small
+                       │  score >= thr → large
+                       │  error        → fallback tier
+                       ▼
+          ┌───────────────────────────────────┐
+          │            Scheduler              │
+          │  pending: HIGH > NORMAL > LOW     │
+          │  dispatcher + 2 concurrent slots  │
+          │  HIGH preempts LOW/NORMAL:        │
+          │    cancel running Task, requeue   │
+          │  budget cap (HTTP 402 on breach)  │
+          └────────────┬──────────────────────┘
+                       │
+                       ▼
+          ┌───────────────────────────────────┐
+          │        Mock Backends (pool)       │
+          │  small: cheap, fast               │
+          │  large: expensive, slow           │
+          │  OpenAI-compatible response       │
+          │  asyncio.sleep simulated latency  │
+          └────────────┬──────────────────────┘
+                       │
+                       ▼
+          {content, metadata: model, cost_usd,
+           latency_ms, queue_wait_ms, total_ms,
+           preempted_count, used_fallback}
 ```
 
 ## Quick start
