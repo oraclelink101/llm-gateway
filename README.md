@@ -55,6 +55,72 @@ this project's own mock backends. No real vendor, price, or model is referenced.
            preempted_count, used_fallback}
 ```
 
+## Request flow
+
+The full lifecycle of one request through router -> scheduler -> backend.
+GitHub renders this Mermaid diagram automatically.
+
+```mermaid
+flowchart TD
+    A([Client: POST /v1/chat]) --> B["app: validate ChatRequest (pydantic)"]
+    B --> C["scheduler.submit -> router.route(prompt)"]
+    C --> D{"score >= threshold?"}
+    D -- "< thr -> small" --> E["Wrap as Job (priority + model)<br/>append to pending, await future"]
+    D -- ">= thr -> large" --> E
+    E --> F[["Dispatcher loop wakes"]]
+    F --> G{"free slot?"}
+    G -- yes --> H["occupy slot -> _execute()"]
+    G -- "no (full)" --> I{"pending outranks<br/>a running job?"}
+    I -- "no -> wait" --> F
+    I -- yes --> J["Preempt: cancel lowest-priority running task"]
+    J --> K["Interrupted job requeued to pending (not lost)"]
+    K --> F
+    H --> L{"budget ok?"}
+    L -- no --> M["Reject: HTTP 402"]
+    L -- yes --> N["backend.chat(): await sleep latency<br/>* cancellable await point (true preemption)"]
+    N --> O{"backend failed?"}
+    O -- yes --> P["Switch to fallback model, retry"]
+    P --> Q["Add cost -> set_result()<br/>build ChatResponse + metadata"]
+    O -- no --> Q
+    Q --> R([Return to Client])
+```
+
+Two orthogonal decisions travel with each request: **priority** is supplied by
+the caller (used by the scheduler to order and preempt), while **model** is
+computed by the router from prompt complexity. They meet in the `Job` and never
+interfere.
+
+## Scheduling example
+
+A concrete walk-through of priority + true preemption on `concurrency = 2`
+(the two slots are the stand-in for GPU workers; latencies come from the mock
+backends: `large = 80 + 1.6*tokens` ms, `small = 20 + 0.4*tokens` ms).
+
+```
+Tasks:
+  A = LOW,  large, 200 tok  -> 400 ms   (arrives t=0)
+  B = LOW,  large, 200 tok  -> 400 ms   (arrives t=0)
+  C = HIGH, small,  50 tok  ->  40 ms   (arrives t=50)
+
+Time (ms)   0    100  200  300  400  500
+            +----+----+----+----+----+
+
+(1) Priority + true preemption
+  Slot 1    |AAAAAAAAAAAAAAAAAAAA|                 A: 0 -> 400
+  Slot 2    |B-|CC|BBBBBBBBBBBBBBBBBBBB|           B: 0->50 (preempted),
+               ^                                   C: 50->90, B restart: 90->490
+               C (HIGH) arrives t=50, preempts B
+
+(2) FCFS (no priority)
+  Slot 1    |AAAAAAAAAAAAAAAAAAAA|                 A: 0 -> 400
+  Slot 2    |BBBBBBBBBBBBBBBBBBBB|CC|              B: 0->400, then C: 400->440
+                                 ^ C waits until a slot frees at t=400
+```
+
+**HIGH task C latency: 40 ms (preemption) vs 390 ms (FCFS).** The cost is that B
+re-runs the 50 ms of work it lost to preemption (its `preempted_count` becomes
+1). This is the single-example intuition behind the benchmark's p99 numbers.
+
 ## Quick start
 
 ```bash
