@@ -1,0 +1,43 @@
+# Cost-aware routing configuration.
+# The router scores each prompt's complexity (0.0 - 1.0) and picks a model.
+# All numbers here are project-local simulation parameters, not real vendor data.
+
+# Model registry. Each model maps to a backend "tier".
+models:
+  small:
+    backend: small        # cheap, fast, lower quality
+  large:
+    backend: large        # expensive, slower, higher quality
+
+# If complexity_score >= complexity_threshold -> route to `large`, else `small`.
+complexity_threshold: 0.5
+
+# Fallback model used when the primary backend simulates a failure.
+fallback: small
+
+# Heuristic scoring weights (see llm_gateway/router.py).
+scoring:
+  # Prompt length contribution: score grows with token count, saturating at
+  # `length_saturation` tokens.
+  length_saturation: 200
+  length_weight: 0.4
+  # Each reasoning keyword found adds `keyword_weight`, capped by keyword_weight_cap.
+  keyword_weight: 0.15
+  keyword_weight_cap: 0.45
+  # Presence of code markers (```), adds a flat bonus.
+  code_marker_weight: 0.15
+  # Keywords that signal a complex / reasoning-heavy request.
+  reasoning_keywords:
+    - analyze
+    - explain
+    - prove
+    - derive
+    - design
+    - compare
+    - optimize
+    - debug
+    - refactor
+    - architecture
+    - step by step
+    - reasoning
+    - algorithm
